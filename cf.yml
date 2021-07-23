@@ -137,7 +137,7 @@ Parameters:
 
   LevelType:
     Type: String
-    Description: "Options: DEFAULT, FLAT, LARGEBIOMES, AMPLIFIED, CUSTOMIZED, BUFFET, BIOMESOP (v1.12-), BIOMESOPLENTY (v1.15+)"
+    Description: "Options: DEFAULT, FLAT, LARGEBIOMES, AMPLIFIED, CUSTOMIZED, BUFFET, BIOMESOP (v1.12-), BIOMESOPLENTY (v1.15+), TERRAFORGED (certain modpacks only!)"
     Default: DEFAULT
     AllowedValues:
       - DEFAULT
@@ -148,6 +148,7 @@ Parameters:
       - BUFFET
       - BIOMESOP
       - BIOMESOPLENTY
+      - TERRAFORGED
 
   EnableRollingLogs:
     Type: String
