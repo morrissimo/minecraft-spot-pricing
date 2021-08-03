@@ -618,6 +618,7 @@ Resources:
         - Name: minecraft
           MemoryReservation: 1024
           Image: !Sub "itzg/minecraft-server:${MinecraftImageTag}"
+          StopTimeout: 100 # seconds; defaults to 30. Overrides ECS_CONTAINER_STOP_TIMEOUT in ECS agent config
           PortMappings:
             - ContainerPort: 25565
               HostPort: 25565
