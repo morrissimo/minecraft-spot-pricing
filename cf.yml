@@ -500,6 +500,8 @@ Resources:
 
           # configure ECS
           echo ECS_CLUSTER=${EcsCluster} >> /etc/ecs/ecs.config
+          echo ECS_CONTAINER_STOP_TIMEOUT=100 >> /etc/ecs/ecs.config
+          echo ECS_AVAILABLE_LOGGING_DRIVERS='["json-file","awslogs"]' >> /etc/ecs/ecs.config
 
           # mount root volume
           mkdir /opt/minecraft
@@ -576,6 +578,12 @@ Resources:
                 Resource: "*"
               - Effect: "Allow"
                 Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+              - Effect: "Allow"
+                Action:
                   - s3:Get*
                   - s3:List*
                 Resource:
@@ -618,7 +626,13 @@ Resources:
         - Name: minecraft
           MemoryReservation: 1024
           Image: !Sub "itzg/minecraft-server:${MinecraftImageTag}"
-          StopTimeout: 100 # seconds; defaults to 30. Overrides ECS_CONTAINER_STOP_TIMEOUT in ECS agent config
+          # StopTimeout here doesn't work, because it gets picked up by mc-server-runner!
+          # StopTimeout: 100 # seconds; defaults to 30. Overrides ECS_CONTAINER_STOP_TIMEOUT in ECS agent config
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: "/aws/ecs/gsmc"
+              awslogs-region: !Sub "${AWS::Region}"
           PortMappings:
             - ContainerPort: 25565
               HostPort: 25565
