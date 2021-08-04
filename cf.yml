@@ -628,11 +628,12 @@ Resources:
           Image: !Sub "itzg/minecraft-server:${MinecraftImageTag}"
           # StopTimeout here doesn't work, because it gets picked up by mc-server-runner!
           # StopTimeout: 100 # seconds; defaults to 30. Overrides ECS_CONTAINER_STOP_TIMEOUT in ECS agent config
-          LogConfiguration:
-            LogDriver: awslogs
-            Options:
-              awslogs-group: "/aws/ecs/gsmc"
-              awslogs-region: !Sub "${AWS::Region}"
+          # using awslogs apparently doesn't work :(
+          # LogConfiguration:
+          #   LogDriver: awslogs
+          #   Options:
+          #     awslogs-group: "/aws/ecs/gsmc"
+          #     awslogs-region: !Sub "${AWS::Region}"
           PortMappings:
             - ContainerPort: 25565
               HostPort: 25565
