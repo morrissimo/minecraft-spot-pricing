@@ -21,15 +21,24 @@ Parameters:
     MinValue: 0
     MaxValue: 60
 
+  BedrockOrJava:
+    Type: String
+    Description: Should this be a Bedrock or Java server? Note that lots of other options here only apply to Java servers
+    Default: Java
+    AllowedValues:
+      - Java
+      - Bedrock
+
   InstanceType:
     Type: String
     Description: "t3.medium is a good cost effective instance, 1 VCPU and 3.75 GB of RAM with moderate network performance. Change at your discretion. https://aws.amazon.com/ec2/instance-types/."
     Default: m5.large
 
   SpotPrice:
-    Type: String
+    Type: Number
     Description: "A t3.medium shouldn't cost more than a cent per hour. Note: Leave this blank to use on-demand pricing."
-    Default: "0.03"
+    Default: 0.03
+    MinValue: 0.0125
 
   KeyPairName:
     Type: String
@@ -58,7 +67,7 @@ Parameters:
 
   MinecraftImageTag:
     Type: String
-    Description: "Java version (Examples include latest, java8-multiarch, etc) Refer to tag descriptions available here: https://github.com/itzg/docker-minecraft-server)"
+    Description: "Java version (Examples include latest, java8-multiarch, etc). Only applies to Java servers. Refer to tag descriptions available here: https://github.com/itzg/docker-minecraft-server)"
     Default: "latest"
     AllowedValues:
       - latest
@@ -100,9 +109,25 @@ Parameters:
     Description: Usernames of your friends
     Default: ""
 
+  OnlineMode:
+    Type: String
+    Description: "If true then all connected players must be authenticated to Xbox Live."
+    Default: true
+    AllowedValues:
+      - true
+      - false
+
+  AllowCheats:
+    Type: String
+    Description: "If true then cheats like commands can be used. Bedrock edition servers only"
+    Default: false
+    AllowedValues:
+      - true
+      - false
+
   MinecraftVersion:
     Type: String
-    Description: Server minecraft version
+    Description: Server minecraft version. Not used for modpack servers. Bedrock servers should not use subminor versions, but can also use LATEST
     Default: ""
 
   Memory:
@@ -159,8 +184,8 @@ Parameters:
 
   EnableRollingLogs:
     Type: String
-    Description: "By default the log file will grow without limit. Set to true to use a rolling log strategy."
-    Default: false
+    Description: "If false, the log file will grow without limit. Set to true to use a rolling log strategy."
+    Default: true
     AllowedValues:
       - true
       - false
@@ -176,25 +201,19 @@ Metadata:
       - Label:
           default: Essential Configuration
         Parameters:
+          - BedrockOrJava
           - ServerState
           - InstanceType
           - SpotPrice
+          - Memory
       - Label:
           default: Server Settings
         Parameters:
-          - MinecraftImageTag
-      - Label:
-          default: Optional Server Settings
-        Parameters:
-          - MinecraftTypeTag
-          - CurseForgeModpackS3Bucket
-          - CurseForgeModpackS3Key
-          - AdminPlayerNames
+          - MinecraftVersion
           - Difficulty
           - Whitelist
-          - MinecraftVersion
-          - Memory
-          - UseAikarsFlags
+          - OnlineMode
+          - AllowCheats
           - Seed
           - MaxPlayers
           - ViewDistance
@@ -203,6 +222,19 @@ Metadata:
           - EnableRollingLogs
           - Timezone
           - ServerShutdownAnnounceDelay
+      - Label:
+          default: Server Settings (Java only)
+        Parameters:
+          - MinecraftImageTag
+          - MinecraftTypeTag
+          - CurseForgeModpackS3Bucket
+          - CurseForgeModpackS3Key
+          - AdminPlayerNames
+          - UseAikarsFlags
+      - Label:
+          default: Server Settings (Bedrock only)
+        Parameters:
+          - AllowCheats
       - Label:
           default: Optional Remote Access (SSH) Configuration
         Parameters:
@@ -264,11 +296,13 @@ Metadata:
 
 Conditions:
   MinecraftTypeTagProvided: !Not [!Equals [!Ref MinecraftTypeTag, ""]]
+  IsBedrock: !Equals [!Ref BedrockOrJava, "Bedrock"]
   CurseForgeModpackS3UrlProvided:
     !And [
       !Equals [!Ref MinecraftTypeTag, "CURSEFORGE"],
       !Not [!Equals [!Ref CurseForgeModpackS3Bucket, ""]],
       !Not [!Equals [!Ref CurseForgeModpackS3Key, ""]],
+      !Not [!Equals [!Ref BedrockOrJava, "Bedrock"]],
     ]
   AdminPlayerNamesProvided: !Not [!Equals [!Ref AdminPlayerNames, ""]]
   DifficultyProvided: !Not [!Equals [!Ref Difficulty, ""]]
@@ -298,6 +332,11 @@ Mappings:
       DesiredCapacity: 1
     Stopped:
       DesiredCapacity: 0
+  ServerPort:
+    Bedrock:
+      Port: 19132
+    Java:
+      Port: 25565
 
 Resources:
   # ====================================================
@@ -468,9 +507,9 @@ Resources:
             IpProtocol: tcp
             CidrIpv6: !Sub "${YourIPv6}/128"
           - !Ref "AWS::NoValue"
-        - FromPort: 25565
-          ToPort: 25565
-          IpProtocol: tcp
+        - FromPort: !FindInMap [ServerPort, !Ref BedrockOrJava, Port]
+          ToPort: !FindInMap [ServerPort, !Ref BedrockOrJava, Port]
+          IpProtocol: !If [IsBedrock, "udp", "tcp"]
           CidrIp: 0.0.0.0/0
       VpcId: !Ref Vpc
 
@@ -617,12 +656,22 @@ Resources:
       ContainerDefinitions:
         - Name: minecraft
           MemoryReservation: 1024
-          Image: !Sub "itzg/minecraft-server:${MinecraftImageTag}"
+          # Image: !Sub "itzg/minecraft-server:${MinecraftImageTag}"
+          #Image: !FindInMap [MinecraftBaseImage, !Ref BedrockOrJava, Image]
+          Image: !If
+            - IsBedrock
+            - "itzg/minecraft-bedrock-server"
+            - !Sub "itzg/minecraft-server:${MinecraftImageTag}"
+          # MinecraftBaseImage:
+          #     Bedrock:
+          #       Image: !Sub "itzg/minecraft-bedrock-server"
+          #     Java:
+          #       Image: !Sub "itzg/minecraft-server:${MinecraftImageTag}"
           StopTimeout: 100 # seconds; defaults to 30. Overrides ECS_CONTAINER_STOP_TIMEOUT in ECS agent config
           PortMappings:
-            - ContainerPort: 25565
-              HostPort: 25565
-              Protocol: tcp
+            - ContainerPort: !FindInMap [ServerPort, !Ref BedrockOrJava, Port]
+              HostPort: !FindInMap [ServerPort, !Ref BedrockOrJava, Port]
+              Protocol: !If [IsBedrock, "udp", "tcp"]
           MountPoints:
             - ContainerPath: /data
               SourceVolume: minecraft
@@ -656,6 +705,11 @@ Resources:
             - !If
               - WhitelistProvided
               - Name: "WHITELIST"
+                Value: !Sub "${Whitelist}"
+              - !Ref "AWS::NoValue"
+            - !If
+              - WhitelistProvided
+              - Name: "WHITE_LIST_USERS" # different env var for the Bedrock image :/
                 Value: !Sub "${Whitelist}"
               - !Ref "AWS::NoValue"
             - !If
