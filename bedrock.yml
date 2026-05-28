@@ -2,9 +2,9 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: Minecraft Spot Price Server via Docker / ECS
 Parameters:
   ECSAMI:
-    Description: AWS ECS AMI ID
+    Description: "AWS ECS-optimized AMI (SSM path). AL2 is EOL 2026-06-30, so default is AL2023. NOTE: the Bedrock server binary is x86-only — do NOT point this at an arm64 AMI for a Bedrock server."
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
-    Default: /aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id
+    Default: /aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id
 
   ServerState:
     Type: String
@@ -552,7 +552,9 @@ Resources:
             # install AWS stuff
             yum install -y amazon-efs-utils
             yum install -y unzip wget vim
-            pip3 install awscli --no-input
+            # NOTE: no `pip3 install awscli` — it aborts the AL2023 boot (bash -xe) and the
+            # AL2023 ECS-optimized AMI already ships the AWS CLI. (Only the unused CURSEFORGE
+            # S3 path below needs it anyway.)
 
             # configure ECS
             echo ECS_CLUSTER=${EcsCluster} >> /etc/ecs/ecs.config
