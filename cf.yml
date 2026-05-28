@@ -1,224 +1,302 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Minecraft Spot Price Server via Docker / ECS
-Parameters:
+Description: Minecraft Spot Price Server via Docker / ECS - now with support for modpacks! See https://docker-minecraft-server.readthedocs.io/en/latest/types-and-platforms/mod-platforms/auto-curseforge/ for details
 
+# PARAMETERS
+
+Parameters:
   ECSAMI:
-    Description: AWS ECS AMI ID
+    Description: "The AWS ECS AMI ID to use. Must be compatible with the EC2 instance type you select. See https://docs.aws.amazon.com/AmazonECS/latest/developerguide/retrieve-ecs-optimized_AMI.html#ecs-optimized-ami-parameter-format"
+    # aws ssm get-parameters --names /aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id --region us-east-1
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
-    Default: /aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id
+    Default: /aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id
+    # or, for ARM based instance types: /aws/service/ecs/optimized-ami/amazon-linux-2023/arm64/recommended/image_id
 
   ServerState:
     Type: String
     Description: "Running: A spot instance will launch shortly after setting this parameter; your Minecraft server should start within 5-10 minutes of changing this parameter (once UPDATE_IN_PROGRESS becomes UPDATE_COMPLETE). Stopped: Your spot instance (and thus Minecraft container) will be terminated shortly after setting this parameter."
     Default: Running
-    AllowedValues: 
-    - Running
-    - Stopped
+    AllowedValues:
+      - Running
+      - Stopped
 
   InstanceType:
     Type: String
-    Description: "t3.medium is a good cost-effective instance, 2 vCPUs and 3.75 GB of RAM with moderate network performance. Change at your discretion. https://aws.amazon.com/ec2/instance-types/."
-    Default: t3.medium
+    Description: "NOTE: must be compatible with the selected ECS AMI! t3.medium is a good cost-effective instance, 2 vCPUs and 3.75 GB of RAM with moderate network performance. Change at your discretion. https://aws.amazon.com/ec2/instance-types/."
+    Default: t4g.large
 
   SpotPrice:
     Type: String
     Description: "A t3.medium shouldn't cost much more than a cent per hour. Note: Leave this blank to use on-demand pricing."
     Default: "0.05"
 
+  ContainerMemoryReservation:
+    Type: Number
+    Description: "Memory reservation (soft cap) for the Minecraft container, in MiB. A good rule of thumb is to set this to ~85% of your selected instance type's total memory to give the game engine most of the available memory but still allowing the OS/etc some headroom."
+    Default: 1024
+
   ContainerInsights:
     Type: String
     Description: "Enable/Disable ECS Container Insights for ECS Cluster"
     Default: disabled
     AllowedValues:
-    - enabled
-    - disabled
+      - enabled
+      - disabled
 
   EntryPoint:
     Type: CommaDelimitedList
     Description: "Task entrypoint (Optional - image default is script /start)"
+    Default: ""
 
   Command:
     Type: CommaDelimitedList
     Description: "Task command (Optional - image default is empty)"
+    Default: ""
 
   LogGroupName:
     Type: String
     Description: (Optional - An empty value disables this feature)
-    Default: ''
+    Default: ""
 
   LogGroupRetentionInDays:
     Type: Number
     Description: (Log retention in days)
-    Default: 7
+    Default: 14
 
   LogStreamPrefix:
     Type: String
     Description: (Optional)
-    Default: 'minecraft-server'
+    Default: "mc-server"
 
   KeyPairName:
     Type: String
     Description: (Optional - An empty value disables this feature)
-    Default: ''
+    Default: ""
 
   YourIPv4:
     Type: String
     Description: (Optional - An empty value disables this feature)
-    Default: ''
+    Default: ""
 
   YourIPv6:
     Type: String
     Description: (Optional - An empty value disables this feature)
-    Default: ''
+    Default: ""
 
   HostedZoneId:
     Type: String
     Description: (Optional - An empty value disables this feature) If you have a hosted zone in Route 53 and wish to set a DNS record whenever your Minecraft instance starts, supply the hosted zone ID here.
-    Default: ''
+    Default: ""
 
   RecordName:
     Type: String
     Description: (Optional - An empty value disables this feature) If you have a hosted zone in Route 53 and wish to set a DNS record whenever your Minecraft instance starts, supply the name of the record here (e.g. minecraft.mydomain.com).
-    Default: ''
+    Default: ""
 
   MinecraftImageTag:
     Type: String
-    Description: "Java version (Examples include latest, adopt13, openj9, etc) Refer to tag descriptions available here: https://github.com/itzg/docker-minecraft-server)"
-    Default: 'latest'
+    # FOOTGUN WARNING: the itzg image tag controls the bundled JAVA version. Leaving this at
+    # the floating "latest" while also floating MinecraftVersion=LATEST is a time-bomb: the day
+    # Mojang ships a build needing a newer JRE than "latest" bundles, the server crashloops with
+    # UnsupportedClassVersionError (this exact thing took down gs-mc-research). PIN at least one side.
+    #   - vanilla: pin a Java tag that matches your pinned MinecraftVersion (e.g. java21 for MC 1.21.x)
+    #   - modded (AUTO_CURSEFORGE): the modpack dictates the MC version + loader; pin the Java tag to
+    #     whatever that modpack requires (e.g. java21 for an MC 1.21.x NeoForge pack).
+    # Tag list: https://github.com/itzg/docker-minecraft-server (e.g. latest, java21, java17, java8-multiarch)
+    Description: "itzg image tag = the bundled Java version. PIN THIS (e.g. java21) to match your MC version; don't leave floating 'latest' alongside a floating MinecraftVersion. See https://github.com/itzg/docker-minecraft-server"
+    Default: "latest"
 
   MinecraftTypeTag:
     Type: String
     Description: "(Examples include SPIGOT, BUKKIT, TUINITY, etc) Refer to tag descriptions available here: https://github.com/itzg/docker-minecraft-server)"
+    Default: ""
 
   AdminPlayerNames:
     Type: String
     Description: Op/Administrator Players
-    Default: ''
+    Default: ""
 
   Difficulty:
     Type: String
     Description: "The game's difficulty"
     Default: normal
     AllowedValues:
-    - peaceful
-    - easy
-    - normal
-    - hard
+      - peaceful
+      - easy
+      - normal
+      - hard
 
   Whitelist:
     Type: String
     Description: Usernames of your friends
-    Default: ''
+    Default: ""
 
   MinecraftVersion:
     Type: String
-    Description: Server minecraft version
-    Default: ''
+    # VANILLA: pin to a specific release (e.g. 1.21.11) to match your world and avoid surprise
+    #   world-format upgrades; make sure MinecraftImageTag bundles a compatible Java.
+    # MODDED (AUTO_CURSEFORGE): LEAVE THIS EMPTY. The CurseForge modpack manifest dictates the
+    #   Minecraft version + mod loader; setting it here can conflict. Pin the modpack via
+    #   CurseforgeModpackUrl (a specific .../files/<id>) instead.
+    Description: "Vanilla: pin a specific MC version (e.g. 1.21.11) matching your world. Modded/AUTO_CURSEFORGE: leave EMPTY — the modpack dictates the version."
+    Default: ""
 
   Memory:
     Type: String
-    Description: How much Memory to allocate for the JVM
-    Default: '1G'
+    Description: How much Memory to allocate for the JVM. 1G is sufficient for vanilla servers, while at least 4G is recommended for modded servers.
+    Default: "4G"
 
   Seed:
     Type: String
     Description: The seed used to generate the world
+    Default: ""
 
   MaxPlayers:
     Type: Number
     Description: Max number of players that can connect simultaneously (default 20)
-    Default: -1
+    Default: 20
 
   ViewDistance:
     Type: Number
-    Description: Max view radius (in chunks) the server will send to the client (default 10)
-    Default: -1
+    Description: Max view radius (in chunks) the server will send to the client
+    Default: 14
 
   GameMode:
     Type: String
     Description: "Options: creative, survival (default), adventure, spectator (v1.8+)"
     Default: survival
     AllowedValues:
-    - creative
-    - survival
-    - adventure
-    - spectator
+      - creative
+      - survival
+      - adventure
+      - spectator
 
   LevelType:
     Type: String
     Description: "Options: DEFAULT, FLAT, LARGEBIOMES, AMPLIFIED, CUSTOMIZED, BUFFET, BIOMESOP (v1.12-), BIOMESOPLENTY (v1.15+)"
     Default: DEFAULT
     AllowedValues:
-    - DEFAULT
-    - FLAT
-    - LARGEBIOMES
-    - AMPLIFIED
-    - CUSTOMIZED
-    - BUFFET
-    - BIOMESOP
-    - BIOMESOPLENTY
+      - DEFAULT
+      - FLAT
+      - LARGEBIOMES
+      - AMPLIFIED
+      - CUSTOMIZED
+      - BUFFET
+      - BIOMESOP
+      - BIOMESOPLENTY
 
   EnableRollingLogs:
     Type: String
     Description: "By default the log file will grow without limit. Set to true to use a rolling log strategy."
-    Default: false
+    Default: true
     AllowedValues:
-    - true
-    - false
+      - true
+      - false
 
   Timezone:
     Type: String
     Description: "Change the server's timezone. Use the canonical name of the format: Area/Location (e.g. America/New_York)"
+    Default: "America/New_York"
+
+  # CURSEFORGE MODPACK AUTO CONFIG STUFF
+  # https://docker-minecraft-server.readthedocs.io/en/latest/variables/#curseforge
+  # https://docker-minecraft-server.readthedocs.io/en/latest/types-and-platforms/mod-platforms/auto-curseforge/
+  UseCurseforgeModpackAutomanagement:
+    Type: String
+    Description: "If true, the server will automatically download and install the modpack specified in the CurseforgeModpackSlug parameter. If false, the server will start with the vanilla Minecraft server."
+    Default: false
+    AllowedValues:
+      - true
+      - false
+
+  CurseforgeApiKey:
+    Type: String
+    NoEcho: true
+    Description: "Curseforge API Key; Required if using Curseforge modpack auto-management. Ref https://console.curseforge.com/"
+    Default: ""
+
+  CurseforgeModpackSlug:
+    Type: String
+    Description: "Curseforge modpack slug, ie www.curseforge.com/minecraft/modpacks/{slug}/ - Required if using Curseforge modpack auto-management"
+    Default: ""
+
+  CurseforgeModpackUrl:
+    Type: String
+    # PIN THE EXACT FILE for any server with an existing world. A modpack URL of the form
+    #   https://www.curseforge.com/minecraft/modpacks/<slug>/files/<fileId>
+    # locks the modpack version, which in turn locks the MC version + loader + mod set. An
+    # existing world was created/last-saved under a specific modpack version; loading it under a
+    # different version risks mod-data incompatibility/migration. Match the file id to the world.
+    # NOTE: with CF_FORCE_SYNCHRONIZE the modpack is re-fetched from CurseForge on every start, so
+    # the server can't boot if that file is ever delisted — consider mirroring the server-pack zip.
+    Description: "Pin a SPECIFIC modpack version: .../modpacks/<slug>/files/<fileId>. Leaving blank uses latest, which can break an existing world. Match the file id to the world's modpack version."
+    Default: ""
+
+  CurseforgeExcludeMods:
+    Type: String
+    Description: "Comma-separated list of mod slugs or IDs to exclude from the modpack. This is useful if you want to exclude certain mods from the modpack, like client-side only mods that weren't properly flagged as such in the modpack manifest."
+    Default: ""
+
+# METADATA
 
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
-      - Label: 
+      - Label:
           default: Essential Configuration
         Parameters:
-        - ServerState
-        - InstanceType
-        - SpotPrice
+          - ServerState
+          - InstanceType
+          - SpotPrice
+          - ContainerMemoryReservation
       - Label:
           default: Server Settings
         Parameters:
-        - MinecraftImageTag
+          - MinecraftImageTag
       - Label:
           default: Optional Server Settings
         Parameters:
-        - MinecraftTypeTag
-        - AdminPlayerNames
-        - Difficulty
-        - Whitelist
-        - MinecraftVersion
-        - Memory
-        - Seed
-        - MaxPlayers
-        - ViewDistance
-        - GameMode
-        - LevelType
-        - EnableRollingLogs
-        - Timezone
+          - MinecraftTypeTag
+          - AdminPlayerNames
+          - Difficulty
+          - Whitelist
+          - MinecraftVersion
+          - Memory
+          - Seed
+          - MaxPlayers
+          - ViewDistance
+          - GameMode
+          - LevelType
+          - EnableRollingLogs
+          - Timezone
+      - Label:
+          default: Optional Curseforge Modpack Configuration
+        Parameters:
+          - UseCurseforgeModpackAutomanagement
+          - CurseforgeApiKey
+          - CurseforgeModpackSlug
+          - CurseforgeModpackUrl
+          - CurseforgeExcludeMods
       - Label:
           default: Optional ECS Cluster and Task Configuration
         Parameters:
-        - ContainerInsights
-        - EntryPoint
-        - Command
-        - LogGroupName
-        - LogGroupRetentionInDays
-        - LogStreamPrefix
-      - Label: 
+          - ECSAMI
+          - ContainerInsights
+          - EntryPoint
+          - Command
+          - LogGroupName
+          - LogGroupRetentionInDays
+          - LogStreamPrefix
+      - Label:
           default: Optional Remote Access (SSH) Configuration
         Parameters:
-        - KeyPairName
-        - YourIPv4
-        - YourIPv6
-      - Label: 
+          - KeyPairName
+          - YourIPv4
+          - YourIPv6
+      - Label:
           default: Optional DNS Configuration
         Parameters:
-        - HostedZoneId
-        - RecordName
+          - HostedZoneId
+          - RecordName
     ParameterLabels:
       ServerState:
         default: "Update this parameter to shut down / start up your Minecraft server as required to save on cost. Takes a few minutes to take effect."
@@ -278,29 +356,44 @@ Metadata:
         default: "The server's timezone"
 
 Conditions:
-  MinecraftTypeTagProvided: !Not [ !Equals [ !Ref MinecraftTypeTag, '' ] ]
-  AdminPlayerNamesProvided: !Not [ !Equals [ !Ref AdminPlayerNames, '' ] ]
-  DifficultyProvided: !Not [ !Equals [ !Ref Difficulty, '' ] ]
-  WhitelistProvided: !Not [ !Equals [ !Ref Whitelist, '' ] ]
-  MinecraftVersionProvided: !Not [ !Equals [ !Ref MinecraftVersion, '' ] ]
-  EntryPointProvided: !Not [ !Equals [ !Join [ "", !Ref EntryPoint ], '' ] ]
-  CommandProvided: !Not [ !Equals [ !Join [ "", !Ref Command ], '' ] ]
-  LogGroupNameProvided: !Not [ !Equals [ !Ref LogGroupName, '' ] ]
-  LogStreamPrefixProvided:  !Not [ !Equals [ !Ref LogStreamPrefix, '' ] ]
-  KeyPairNameProvided: !Not [ !Equals [ !Ref KeyPairName, '' ] ]
-  IPv4AddressProvided: !Not [ !Equals [ !Ref YourIPv4, '' ] ]
-  IPv6AddressProvided: !Not [ !Equals [ !Ref YourIPv6, '' ] ]
-  DnsConfigEnabled: !And [ !Not [ !Equals [ !Ref HostedZoneId, '' ] ], !Not [ !Equals [ !Ref RecordName, '' ] ] ]
-  SpotPriceProvided: !Not [ !Equals [ !Ref SpotPrice, '' ] ]
-  MemoryProvided: !Not [ !Equals [ !Ref Memory, '' ] ]
-  SeedProvided: !Not [ !Equals [ !Ref Seed, '' ] ]
-  MaxPlayersProvided: !Not [ !Equals [ !Ref MaxPlayers, -1 ] ]
-  ViewDistanceProvided: !Not [ !Equals [ !Ref ViewDistance, -1 ] ]
-  GameModeProvided: !Not [ !Equals [ !Ref GameMode, '' ] ]
-  LevelTypeProvided: !Not [ !Equals [ !Ref LevelType, '' ] ]
-  EnableRollingLogsProvided: !Not [ !Equals [ !Ref EnableRollingLogs, '' ] ]
-  TimezoneProvided: !Not [ !Equals [ !Ref Timezone, '' ] ]
-
+  MinecraftTypeTagProvided: !Not [!Equals [!Ref MinecraftTypeTag, ""]]
+  AdminPlayerNamesProvided: !Not [!Equals [!Ref AdminPlayerNames, ""]]
+  DifficultyProvided: !Not [!Equals [!Ref Difficulty, ""]]
+  WhitelistProvided: !Not [!Equals [!Ref Whitelist, ""]]
+  MinecraftVersionProvided: !Not [!Equals [!Ref MinecraftVersion, ""]]
+  EntryPointProvided: !Not [!Equals [!Join ["", !Ref EntryPoint], ""]]
+  CommandProvided: !Not [!Equals [!Join ["", !Ref Command], ""]]
+  LogGroupNameProvided: !Not [!Equals [!Ref LogGroupName, ""]]
+  LogStreamPrefixProvided: !Not [!Equals [!Ref LogStreamPrefix, ""]]
+  KeyPairNameProvided: !Not [!Equals [!Ref KeyPairName, ""]]
+  IPv4AddressProvided: !Not [!Equals [!Ref YourIPv4, ""]]
+  IPv6AddressProvided: !Not [!Equals [!Ref YourIPv6, ""]]
+  DnsConfigEnabled:
+    !And [
+      !Not [!Equals [!Ref HostedZoneId, ""]],
+      !Not [!Equals [!Ref RecordName, ""]],
+    ]
+  SpotPriceProvided: !Not [!Equals [!Ref SpotPrice, ""]]
+  MemoryProvided: !Not [!Equals [!Ref Memory, ""]]
+  SeedProvided: !Not [!Equals [!Ref Seed, ""]]
+  MaxPlayersProvided: !Not [!Equals [!Ref MaxPlayers, -1]]
+  ViewDistanceProvided: !Not [!Equals [!Ref ViewDistance, -1]]
+  GameModeProvided: !Not [!Equals [!Ref GameMode, ""]]
+  LevelTypeProvided: !Not [!Equals [!Ref LevelType, ""]]
+  EnableRollingLogsProvided: !Not [!Equals [!Ref EnableRollingLogs, ""]]
+  TimezoneProvided: !Not [!Equals [!Ref Timezone, ""]]
+  CurseforgeModpackAutomanagementEnabled:
+    !Equals [!Ref UseCurseforgeModpackAutomanagement, "true"]
+  CurseforgeModpackSlugProvided:
+    !And [
+      !Equals [!Ref UseCurseforgeModpackAutomanagement, "true"],
+      !Not [!Equals [!Ref CurseforgeModpackSlug, ""]],
+    ]
+  CurseforgeModpackUrlProvided:
+    !And [
+      !Equals [!Ref UseCurseforgeModpackAutomanagement, "true"],
+      !Not [!Equals [!Ref CurseforgeModpackUrl, ""]],
+    ]
 
 Mappings:
   ServerState:
@@ -310,68 +403,82 @@ Mappings:
       DesiredCapacity: 0
 
 Resources:
-
   # ====================================================
   # BASIC VPC
   # ====================================================
 
-  Vpc: 
+  Vpc:
     Type: AWS::EC2::VPC
-    Properties: 
+    Properties:
       CidrBlock: 10.100.0.0/26
       EnableDnsSupport: true
       EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}"
 
   SubnetA:
     Type: AWS::EC2::Subnet
     Properties:
       AvailabilityZone: !Select
-      - 0
-      - !GetAZs 
-        Ref: 'AWS::Region'
-      CidrBlock: !Select [ 0, !Cidr [ 10.100.0.0/26, 4, 4 ] ]
-      VpcId: !Ref Vpc  
+        - 0
+        - !GetAZs
+          Ref: "AWS::Region"
+      CidrBlock: !Select [0, !Cidr [10.100.0.0/26, 4, 4]]
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-subnet-a"
 
   SubnetARoute:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties: 
+    Properties:
       RouteTableId: !Ref RouteTable
       SubnetId: !Ref SubnetA
 
   SubnetBRoute:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties: 
+    Properties:
       RouteTableId: !Ref RouteTable
-      SubnetId: !Ref SubnetB  
+      SubnetId: !Ref SubnetB
 
   SubnetB:
     Type: AWS::EC2::Subnet
     Properties:
       AvailabilityZone: !Select
-      - 1
-      - !GetAZs 
-        Ref: 'AWS::Region'
-      CidrBlock: !Select [ 1, !Cidr [ 10.100.0.0/26, 4, 4 ] ]
+        - 1
+        - !GetAZs
+          Ref: "AWS::Region"
+      CidrBlock: !Select [1, !Cidr [10.100.0.0/26, 4, 4]]
       VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-subnet-b"
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
-    Properties: {}
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-igw-1"
 
   InternetGatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
-    Properties: 
+    Properties:
       InternetGatewayId: !Ref InternetGateway
       VpcId: !Ref Vpc
 
   RouteTable:
     Type: AWS::EC2::RouteTable
-    Properties: 
-      VpcId: !Ref Vpc    
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-rt-1"
 
   Route:
     Type: AWS::EC2::Route
-    Properties: 
+    Properties:
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref InternetGateway
       RouteTableId: !Ref RouteTable
@@ -382,14 +489,16 @@ Resources:
 
   Efs:
     Type: AWS::EFS::FileSystem
-    Properties: {}
+    Properties:
+      BackupPolicy:
+        Status: ENABLED
 
   MountA:
     Type: AWS::EFS::MountTarget
     Properties:
       FileSystemId: !Ref Efs
       SecurityGroups:
-      - !Ref EfsSg
+        - !Ref EfsSg
       SubnetId: !Ref SubnetA
 
   MountB:
@@ -397,81 +506,111 @@ Resources:
     Properties:
       FileSystemId: !Ref Efs
       SecurityGroups:
-      - !Ref EfsSg
+        - !Ref EfsSg
       SubnetId: !Ref SubnetB
 
   EfsSg:
     Type: AWS::EC2::SecurityGroup
-    Properties: 
+    Properties:
       GroupName: !Sub "${AWS::StackName}-efs"
       GroupDescription: !Sub "${AWS::StackName}-efs"
       SecurityGroupIngress:
-      - FromPort: 2049
-        ToPort: 2049
-        IpProtocol: tcp
-        SourceSecurityGroupId: !Ref Ec2Sg
+        - FromPort: 2049
+          ToPort: 2049
+          IpProtocol: tcp
+          SourceSecurityGroupId: !Ref Ec2Sg
       VpcId: !Ref Vpc
-      
+
   # ====================================================
   # INSTANCE CONFIG
   # ====================================================
 
   Ec2Sg:
     Type: AWS::EC2::SecurityGroup
-    Properties: 
+    Properties:
       GroupName: !Sub "${AWS::StackName}-ec2"
       GroupDescription: !Sub "${AWS::StackName}-ec2"
       SecurityGroupIngress:
-      - !If
-        - IPv4AddressProvided 
-        - FromPort: 22
-          ToPort: 22
+        - !If
+          - IPv4AddressProvided
+          - FromPort: 22
+            ToPort: 22
+            IpProtocol: tcp
+            CidrIp: !Sub "${YourIPv4}/32"
+          - !Ref "AWS::NoValue"
+        - !If
+          - IPv6AddressProvided
+          - FromPort: 22
+            ToPort: 22
+            IpProtocol: tcp
+            CidrIpv6: !Sub "${YourIPv6}/128"
+          - !Ref "AWS::NoValue"
+        - FromPort: 25565
+          ToPort: 25565
           IpProtocol: tcp
-          CidrIp: !Sub "${YourIPv4}/32"
-        - !Ref 'AWS::NoValue'
-      - !If
-        - IPv6AddressProvided 
-        - FromPort: 22
-          ToPort: 22
-          IpProtocol: tcp
-          CidrIpv6: !Sub "${YourIPv6}/128"
-        - !Ref 'AWS::NoValue'
-      - FromPort: 25565
-        ToPort: 25565
-        IpProtocol: tcp
-        CidrIp: 0.0.0.0/0
+          CidrIp: 0.0.0.0/0
       VpcId: !Ref Vpc
 
-  LaunchConfiguration:
-    Type: AWS::AutoScaling::LaunchConfiguration
+  # NOTE: this used to be an AWS::AutoScaling::LaunchConfiguration, which is deprecated and
+  # cannot be created in newer AWS accounts. Migrated to AWS::EC2::LaunchTemplate per
+  # https://docs.aws.amazon.com/autoscaling/ec2/userguide/migrate-launch-configurations-with-cloudformation.html
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
     Properties:
-      AssociatePublicIpAddress: true
-      IamInstanceProfile: !Ref InstanceProfile
-      ImageId: !Ref ECSAMI
-      InstanceType: !Ref InstanceType
-      KeyName: 
-        !If [ KeyPairNameProvided, !Ref KeyPairName, !Ref 'AWS::NoValue' ]
-      SecurityGroups:
-      - !Ref Ec2Sg
-      SpotPrice: !If [ SpotPriceProvided, !Ref SpotPrice, !Ref 'AWS::NoValue' ]
-      UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash -xe
-          echo ECS_CLUSTER=${EcsCluster} >> /etc/ecs/ecs.config
-          yum install -y amazon-efs-utils
-          mkdir /opt/minecraft
-          mount -t efs ${Efs}:/ /opt/minecraft
-          chown 845:845 /opt/minecraft
+      LaunchTemplateName: !Sub "${AWS::StackName}-launchtemplate"
+      LaunchTemplateData:
+        ImageId: !Ref ECSAMI
+        InstanceType: !Ref InstanceType
+        IamInstanceProfile:
+          Arn: !GetAtt InstanceProfile.Arn
+        KeyName:
+          !If [KeyPairNameProvided, !Ref KeyPairName, !Ref "AWS::NoValue"]
+        InstanceMarketOptions:
+          MarketType: spot
+          SpotOptions:
+            SpotInstanceType: one-time
+            MaxPrice:
+              !If [SpotPriceProvided, !Ref SpotPrice, !Ref "AWS::NoValue"]
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            AssociatePublicIpAddress: true
+            Groups:
+              - !Ref Ec2Sg
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash -xe
+
+            # update everything
+            yum update -y
+            yum clean all -y
+
+            # install AWS stuff
+            yum install -y amazon-efs-utils
+            yum install -y unzip wget vim
+
+            # configure ECS
+            # see https://github.com/aws/amazon-ecs-agent
+            echo ECS_CLUSTER=${EcsCluster} >> /etc/ecs/ecs.config
+            echo ECS_CONTAINER_INSTANCE_PROPAGATE_TAGS_FROM=ec2_instance >> /etc/ecs/ecs.config
+            echo ECS_ENABLE_SPOT_INSTANCE_DRAINING=true >> /etc/ecs/ecs.config
+
+            # mount root volume
+            mkdir /opt/minecraft
+            mount -t efs ${Efs}:/ /opt/minecraft
+            chown ec2-user:ec2-user /opt/minecraft
 
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     DependsOn:
-    - MountA
-    - MountB
+      - MountA
+      - MountB
     Properties:
       AutoScalingGroupName: !Sub "${AWS::StackName}-asg"
-      DesiredCapacity: !FindInMap [ ServerState, !Ref ServerState, DesiredCapacity ]
-      LaunchConfigurationName: !Ref LaunchConfiguration
+      DesiredCapacity:
+        !FindInMap [ServerState, !Ref ServerState, DesiredCapacity]
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
       NewInstancesProtectedFromScaleIn: true
       MaxSize: 1
       MinSize: 0
@@ -479,26 +618,30 @@ Resources:
         - !Ref SubnetA
         - !Ref SubnetB
     Metadata:
-      LaunchEvent: !If [ DnsConfigEnabled, !GetAtt LaunchEvent.Arn, "" ]
+      LaunchEvent: !If [DnsConfigEnabled, !GetAtt LaunchEvent.Arn, ""]
 
   InstanceRole:
     Type: AWS::IAM::Role
-    Properties: 
+    Properties:
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
-        - Effect: Allow
-          Principal:
-            Service:
-            - ec2.amazonaws.com
-          Action:
-          - sts:AssumeRole
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}"
 
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile
-    Properties: 
+    Properties:
       Roles:
         - !Ref InstanceRole
 
@@ -534,11 +677,11 @@ Resources:
 
   EcsService:
     Type: AWS::ECS::Service
-    Properties: 
+    Properties:
       Cluster: !Ref EcsCluster
-      DesiredCount: !FindInMap [ ServerState, !Ref ServerState, DesiredCapacity ]
+      DesiredCount: !FindInMap [ServerState, !Ref ServerState, DesiredCapacity]
       ServiceName: !Sub "${AWS::StackName}-ecs-service"
-      TaskDefinition: !Ref EcsTask  
+      TaskDefinition: !Ref EcsTask
       CapacityProviderStrategy:
         - CapacityProvider: !Ref ECSCapacityProvider
           Weight: 1
@@ -549,45 +692,48 @@ Resources:
 
   EcsTask:
     Type: AWS::ECS::TaskDefinition
-    Properties: 
+    Properties:
       Volumes:
-      - Host:
-          SourcePath: /opt/minecraft
-        Name: minecraft
+        - Host:
+            SourcePath: /opt/minecraft
+          Name: minecraft
       NetworkMode: "bridge"
-      ContainerDefinitions:      
+      ContainerDefinitions:
         - Name: minecraft
-          MemoryReservation: 1024
+          MemoryReservation: !Ref ContainerMemoryReservation
+          # both required to attach to the server console via `docker attach`
+          # (validated on the bedrock stack; see server_cmds.md)
+          PseudoTerminal: true
+          Interactive: true
           Image: !Sub "itzg/minecraft-server:${MinecraftImageTag}"
           EntryPoint: !If
-              - EntryPointProvided
-              - !Ref EntryPoint
-              - !Ref 'AWS::NoValue'
+            - EntryPointProvided
+            - !Ref EntryPoint
+            - !Ref "AWS::NoValue"
           Command: !If
-              - CommandProvided
-              - !Ref Command
-              - !Ref 'AWS::NoValue'
+            - CommandProvided
+            - !Ref Command
+            - !Ref "AWS::NoValue"
           PortMappings:
-          - ContainerPort: 25565
-            HostPort: 25565
-            Protocol: tcp
-          LogConfiguration:
-            !If
+            - ContainerPort: 25565
+              HostPort: 25565
+              Protocol: tcp
+          LogConfiguration: !If
             - LogGroupNameProvided
             - LogDriver: awslogs
               Options:
                 awslogs-group: !Ref CloudWatchLogGroup
                 awslogs-stream-prefix: !If
-                - LogStreamPrefixProvided
-                - !Sub ${LogStreamPrefix}
-                - !Ref 'AWS::NoValue'
+                  - LogStreamPrefixProvided
+                  - !Sub ${LogStreamPrefix}
+                  - !Ref "AWS::NoValue"
                 awslogs-region: !Ref AWS::Region
                 awslogs-create-group: true
-            - !Ref 'AWS::NoValue'
+            - !Ref "AWS::NoValue"
           MountPoints:
-          - ContainerPath: /data
-            SourceVolume: minecraft
-            ReadOnly: false
+            - ContainerPath: /data
+              SourceVolume: minecraft
+              ReadOnly: false
           Environment:
             - Name: "EULA"
               Value: "TRUE"
@@ -595,67 +741,122 @@ Resources:
               - MinecraftTypeTagProvided
               - Name: "TYPE"
                 Value: !Sub "${MinecraftTypeTag}"
-              - !Ref 'AWS::NoValue'
+              - !Ref "AWS::NoValue"
             - !If
               - AdminPlayerNamesProvided
               - Name: "OPS"
                 Value: !Sub "${AdminPlayerNames}"
-              - !Ref 'AWS::NoValue'
+              - !Ref "AWS::NoValue"
             - !If
               - DifficultyProvided
               - Name: "DIFFICULTY"
                 Value: !Sub "${Difficulty}"
-              - !Ref 'AWS::NoValue'
+              - !Ref "AWS::NoValue"
             - !If
               - WhitelistProvided
               - Name: "WHITELIST"
                 Value: !Sub "${Whitelist}"
-              - !Ref 'AWS::NoValue'
+              - !Ref "AWS::NoValue"
             - !If
               - MinecraftVersionProvided
               - Name: "VERSION"
                 Value: !Sub "${MinecraftVersion}"
-              - !Ref 'AWS::NoValue'
+              - !Ref "AWS::NoValue"
             - !If
               - MemoryProvided
               - Name: "MEMORY"
                 Value: !Sub "${Memory}"
-              - !Ref 'AWS::NoValue'
+              - !Ref "AWS::NoValue"
             - !If
               - SeedProvided
               - Name: "SEED"
                 Value: !Sub "${Seed}"
-              - !Ref 'AWS::NoValue'
+              - !Ref "AWS::NoValue"
             - !If
               - MaxPlayersProvided
               - Name: "MAX_PLAYERS"
                 Value: !Sub "${MaxPlayers}"
-              - !Ref 'AWS::NoValue'
+              - !Ref "AWS::NoValue"
             - !If
               - ViewDistanceProvided
               - Name: "VIEW_DISTANCE"
                 Value: !Sub "${ViewDistance}"
-              - !Ref 'AWS::NoValue'
+              - !Ref "AWS::NoValue"
             - !If
               - GameModeProvided
               - Name: "MODE"
                 Value: !Sub "${GameMode}"
-              - !Ref 'AWS::NoValue'
+              - !Ref "AWS::NoValue"
             - !If
               - LevelTypeProvided
               - Name: "LEVEL_TYPE"
                 Value: !Sub "${LevelType}"
-              - !Ref 'AWS::NoValue'
+              - !Ref "AWS::NoValue"
             - !If
               - EnableRollingLogsProvided
               - Name: "ENABLE_ROLLING_LOGS"
                 Value: !Sub "${EnableRollingLogs}"
-              - !Ref 'AWS::NoValue'
+              - !Ref "AWS::NoValue"
             - !If
               - TimezoneProvided
               - Name: "TZ"
                 Value: !Sub "${Timezone}"
-              - !Ref 'AWS::NoValue'
+              - !Ref "AWS::NoValue"
+            # Curseforge modpack automanagement settings
+            - !If
+              - CurseforgeModpackAutomanagementEnabled
+              - Name: "MOD_PLATFORM"
+                Value: "AUTO_CURSEFORGE"
+              - !Ref "AWS::NoValue"
+            - !If
+              - CurseforgeModpackAutomanagementEnabled
+              - Name: "CF_API_KEY"
+                Value: !Sub "${CurseforgeApiKey}"
+              - !Ref "AWS::NoValue"
+            - !If
+              - CurseforgeModpackSlugProvided
+              - Name: "CF_SLUG"
+                Value: !Sub "${CurseforgeModpackSlug}"
+              - !Ref "AWS::NoValue"
+            - !If
+              - CurseforgeModpackUrlProvided
+              - Name: "CF_PAGE_URL"
+                Value: !Sub "${CurseforgeModpackUrl}"
+              - !Ref "AWS::NoValue"
+            - !If
+              - CurseforgeModpackAutomanagementEnabled
+              - Name: "CF_EXCLUDE_MODS"
+                Value: !Sub "${CurseforgeExcludeMods}"
+              - !Ref "AWS::NoValue"
+            # CF_FORCE_SYNCHRONIZE
+            # "If needing to iterate on the options above, set CF_FORCE_SYNCHRONIZE to "true" to ensure the exclude/includes are re-evaluated."
+            # see https://docker-minecraft-server.readthedocs.io/en/latest/types-and-platforms/mod-platforms/auto-curseforge/#exclude-client-mods
+            - !If
+              - CurseforgeModpackAutomanagementEnabled
+              - Name: "CF_FORCE_SYNCHRONIZE"
+                Value: "true"
+              - !Ref "AWS::NoValue"
+            - !If
+              - CurseforgeModpackAutomanagementEnabled
+              - Name: "MOTD"
+                Value: "GS MC ?4>>MODDED<<?r\n%MODPACK_NAME% (v%MODPACK_VERSION%)"
+              - Name: "MOTD"
+                Value: "GS MC ?4>>MODDED<<?r"
+            # hardcoded server config settings
+            - Name: "FORCE_GAMEMODE"
+              Value: "true"
+            - Name: "SNOOPER_ENABLED"
+              Value: "false"
+            - Name: "STOP_SERVER_ANNOUNCE_DELAY"
+              Value: "30"
+            - Name: "USE_AIKAR_FLAGS"
+              Value: "true"
+            - Name: "LOG_TIMESTAMP"
+              Value: "true"
+            - Name: "ALLOW_FLIGHT"
+              Value: "true"
+            - Name: "SPAWN_PROTECTION"
+              Value: "0"
 
   CloudWatchLogGroup:
     Condition: LogGroupNameProvided
@@ -671,23 +872,23 @@ Resources:
   SetDNSRecordLambdaRole:
     Type: AWS::IAM::Role
     Condition: DnsConfigEnabled
-    Properties: 
+    Properties:
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
-        - Effect: Allow
-          Principal:
-            Service:
-            - lambda.amazonaws.com
-          Action:
-          - sts:AssumeRole
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
       Policies:
         - PolicyName: root
-          PolicyDocument: 
+          PolicyDocument:
             Version: "2012-10-17"
-            Statement: 
+            Statement:
               - Effect: "Allow"
                 Action: "route53:ChangeResourceRecordSets"
                 Resource: !Sub "arn:aws:route53:::hostedzone/${HostedZoneId}"
@@ -698,7 +899,7 @@ Resources:
   SetDNSRecordLambda:
     Type: "AWS::Lambda::Function"
     Condition: DnsConfigEnabled
-    Properties: 
+    Properties:
       Environment:
         Variables:
           HostedZoneId: !Ref HostedZoneId
@@ -734,21 +935,21 @@ Resources:
       Handler: index.handler
       MemorySize: 128
       Role: !GetAtt SetDNSRecordLambdaRole.Arn
-      Runtime: python3.11
+      Runtime: python3.12
       Timeout: 20
 
   LaunchEvent:
     Type: AWS::Events::Rule
     Condition: DnsConfigEnabled
-    Properties: 
+    Properties:
       EventPattern:
         source:
-        - aws.autoscaling
+          - aws.autoscaling
         detail-type:
-        - EC2 Instance Launch Successful
+          - EC2 Instance Launch Successful
         detail:
           AutoScalingGroupName:
-          - !Sub "${AWS::StackName}-asg"
+            - !Sub "${AWS::StackName}-asg"
       Name: !Sub "${AWS::StackName}-instance-launch"
       State: ENABLED
       Targets:
@@ -758,7 +959,7 @@ Resources:
   LaunchEventLambdaPermission:
     Type: AWS::Lambda::Permission
     Condition: DnsConfigEnabled
-    Properties: 
+    Properties:
       Action: lambda:InvokeFunction
       FunctionName: !GetAtt SetDNSRecordLambda.Arn
       Principal: events.amazonaws.com
@@ -768,3 +969,4 @@ Outputs:
   CheckInstanceIp:
     Description: To find your Minecraft instance IP address, visit the following link. Click on the instance to find its Public IP address.
     Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/ec2/v2/home?region=${AWS::Region}#Instances:tag:aws:autoscaling:groupName=${AutoScalingGroup};sort=tag:Name"
+
