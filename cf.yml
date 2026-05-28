@@ -197,6 +197,11 @@ Parameters:
     Description: "Change the server's timezone. Use the canonical name of the format: Area/Location (e.g. America/New_York)"
     Default: "America/New_York"
 
+  ServerBrand:
+    Type: String
+    Description: "Branding prefix shown in the server list MOTD, e.g. your server-group name. Combined with a >>VANILLA<< / >>MODDED<< suffix automatically."
+    Default: "Minecraft"
+
   # CURSEFORGE MODPACK AUTO CONFIG STUFF
   # https://docker-minecraft-server.readthedocs.io/en/latest/variables/#curseforge
   # https://docker-minecraft-server.readthedocs.io/en/latest/types-and-platforms/mod-platforms/auto-curseforge/
@@ -839,9 +844,9 @@ Resources:
             - !If
               - CurseforgeModpackAutomanagementEnabled
               - Name: "MOTD"
-                Value: "GS MC ?4>>MODDED<<?r\n%MODPACK_NAME% (v%MODPACK_VERSION%)"
+                Value: !Sub "${ServerBrand} §4>>MODDED<<§r\n%MODPACK_NAME% (v%MODPACK_VERSION%)"
               - Name: "MOTD"
-                Value: "GS MC ?4>>MODDED<<?r"
+                Value: !Sub "${ServerBrand} §2>>VANILLA<<§r"
             # hardcoded server config settings
             - Name: "FORCE_GAMEMODE"
               Value: "true"
