@@ -901,9 +901,17 @@ Resources:
                 Action: "ec2:DescribeInstance*"
                 Resource: "*"
 
+  SetDNSRecordLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: DnsConfigEnabled
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-set-dns"
+      RetentionInDays: 30
+
   SetDNSRecordLambda:
     Type: "AWS::Lambda::Function"
     Condition: DnsConfigEnabled
+    DependsOn: SetDNSRecordLambdaLogGroup
     Properties:
       Environment:
         Variables:
