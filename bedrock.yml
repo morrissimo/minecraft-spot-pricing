@@ -396,6 +396,27 @@ Resources:
         - Key: Name
           Value: !Sub "${AWS::StackName}-b"
 
+  SubnetC:
+    Type: AWS::EC2::Subnet
+    DeletionPolicy: Delete
+    Properties:
+      AvailabilityZone: !Select
+        - 2
+        - !GetAZs
+          Ref: "AWS::Region"
+      CidrBlock: !Select [2, !Cidr [10.100.0.0/26, 4, 4]]
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-c"
+
+  SubnetCRoute:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DeletionPolicy: Delete
+    Properties:
+      RouteTableId: !Ref RouteTable
+      SubnetId: !Ref SubnetC
+
   InternetGateway:
     Type: AWS::EC2::InternetGateway
     Properties:
@@ -487,6 +508,24 @@ Resources:
       SecurityGroups:
         - !Ref EfsSg
       SubnetId: !Ref SubnetB
+
+  MountRootC:
+    Type: AWS::EFS::MountTarget
+    DeletionPolicy: Delete
+    Properties:
+      FileSystemId: !Ref EfsMCRoot
+      SecurityGroups:
+        - !Ref EfsSg
+      SubnetId: !Ref SubnetC
+
+  MountModpacksC:
+    Type: AWS::EFS::MountTarget
+    DeletionPolicy: Delete
+    Properties:
+      FileSystemId: !Ref EfsMCModpacks
+      SecurityGroups:
+        - !Ref EfsSg
+      SubnetId: !Ref SubnetC
 
   # ====================================================
   # INSTANCE CONFIG
@@ -593,8 +632,10 @@ Resources:
     DependsOn:
       - MountRootA
       - MountRootB
+      - MountRootC
       #- MountModpacksA
       #- MountModpacksB
+      #- MountModpacksC
     Properties:
       AutoScalingGroupName: !Sub "${AWS::StackName}-asg"
       DesiredCapacity:
@@ -607,6 +648,7 @@ Resources:
       VPCZoneIdentifier:
         - !Ref SubnetA
         - !Ref SubnetB
+        - !Ref SubnetC
 
   InstanceRole:
     Type: AWS::IAM::Role
