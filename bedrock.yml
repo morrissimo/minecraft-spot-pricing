@@ -597,6 +597,14 @@ Resources:
 
             # configure ECS
             echo ECS_CLUSTER=${EcsCluster} >> /etc/ecs/ecs.config
+            # Spot draining: on an EC2 Spot interruption notice, have the ECS agent
+            # gracefully STOP the task (SIGTERM honoring the container StopTimeout)
+            # instead of letting the container be hard-killed at instance reclaim.
+            # REQUIRED for the native graceful announce-before-shutdown (STOP_SERVER_ANNOUNCE_DELAY,
+            # itzg entrypoint) to fire on Spot reclaims — without this, Spot = boom.
+            # (Manual `docker stop` / ECS deploys send SIGTERM regardless; this is the
+            # Spot-interruption path specifically.) Applies on the NEXT instance launch.
+            echo ECS_ENABLE_SPOT_INSTANCE_DRAINING=true >> /etc/ecs/ecs.config
 
             # mount root volume
             mkdir /opt/minecraft
@@ -741,6 +749,14 @@ Resources:
           #     Java:
           #       Image: !Sub "itzg/minecraft-server:${MinecraftImageTag}"
           StopTimeout: 100 # seconds; defaults to 30. Overrides ECS_CONTAINER_STOP_TIMEOUT in ECS agent config
+
+          # Graceful announce-before-shutdown is now NATIVE in the itzg entrypoint
+          # (itzg 2026.6.2, PR #651 by @morrissimo): with STOP_SERVER_ANNOUNCE_DELAY set
+          # (env below), on SIGTERM the server announces, waits the delay, then stops +
+          # saves cleanly. The prior EntryPoint override that wired this by hand was retired
+          # 2026-07-16 once the upstream flags shipped. StopTimeout (above) + Spot draining
+          # (LaunchTemplate UserData) still bound the shutdown window (delay < 100s < 120s).
+
           PortMappings:
             - ContainerPort: !FindInMap [ServerPort, !Ref BedrockOrJava, Port]
               HostPort: !FindInMap [ServerPort, !Ref BedrockOrJava, Port]
