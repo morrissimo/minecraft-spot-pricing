@@ -76,6 +76,29 @@ Parameters:
       - java16
       - multiarch-latest
 
+  BedrockImageTag:
+    Type: String
+    Description: "itzg/minecraft-bedrock-server tag. Only applies to Bedrock servers. Pin a release (e.g. 2026.10.2): changing it forces a new task-def revision and a fresh image pull. 'latest' is only re-pulled on a fresh instance."
+    Default: "2026.10.2"
+
+  BedrockTransport:
+    Type: String
+    Description: "BDS transport. nethernet = TCP server-port signaling + UDP gameplay range (BDS 1.26.50+ default). raknet = legacy UDP 19132 (deprecated by Mojang in 26.60; may stop working client-side). Only applies to Bedrock servers."
+    Default: nethernet
+    AllowedValues:
+      - nethernet
+      - raknet
+
+  BedrockUdpPortStart:
+    Type: Number
+    Description: "First UDP port of the NetherNet gameplay range (one port per connected client; range size should be >= MaxPlayers)."
+    Default: 19140
+
+  BedrockUdpPortEnd:
+    Type: Number
+    Description: "Last UDP port of the NetherNet gameplay range (inclusive)."
+    Default: 19171
+
   MinecraftTypeTag:
     Type: String
     Description: "(Examples include CURSEFORGE, SPIGOT, BUKKIT, TUINITY, etc) Refer to tag descriptions available here: https://github.com/itzg/docker-minecraft-server)"
@@ -240,6 +263,10 @@ Metadata:
           default: Server Settings (Bedrock only)
         Parameters:
           - AllowCheats
+          - BedrockImageTag
+          - BedrockTransport
+          - BedrockUdpPortStart
+          - BedrockUdpPortEnd
       - Label:
           default: Optional Remote Access (SSH) Configuration
         Parameters:
@@ -302,6 +329,9 @@ Metadata:
 Conditions:
   MinecraftTypeTagProvided: !Not [!Equals [!Ref MinecraftTypeTag, ""]]
   IsBedrock: !Equals [!Ref BedrockOrJava, "Bedrock"]
+  IsNetherNet: !And
+    - !Equals [!Ref BedrockOrJava, "Bedrock"]
+    - !Equals [!Ref BedrockTransport, "nethernet"]
   CurseForgeModpackS3UrlProvided:
     !And [
       !Equals [!Ref MinecraftTypeTag, "CURSEFORGE"],
@@ -555,6 +585,22 @@ Resources:
           ToPort: !FindInMap [ServerPort, !Ref BedrockOrJava, Port]
           IpProtocol: !If [IsBedrock, "udp", "tcp"]
           CidrIp: 0.0.0.0/0
+        # NetherNet. The UDP 19132 rule above stays under
+        # NetherNet so a BedrockTransport=raknet rollback is a parameter flip, not an SG change.
+        - !If
+          - IsNetherNet
+          - FromPort: 19132
+            ToPort: 19132
+            IpProtocol: tcp # NetherNet HTTP signaling (GET /v1/join, POST /v1/join/{id})
+            CidrIp: 0.0.0.0/0
+          - !Ref "AWS::NoValue"
+        - !If
+          - IsNetherNet
+          - FromPort: !Ref BedrockUdpPortStart
+            ToPort: !Ref BedrockUdpPortEnd
+            IpProtocol: udp # NetherNet WebRTC/ICE gameplay, one port per client
+            CidrIp: 0.0.0.0/0
+          - !Ref "AWS::NoValue"
       VpcId: !Ref Vpc
 
   # NOTE: LaunchConfiguration is deprecated and newer AWS accounts can no longer create one.
@@ -724,6 +770,10 @@ Resources:
   EcsTask:
     Type: AWS::ECS::TaskDefinition
     Properties:
+      # host: BDS binds the instance's ports directly; no docker-proxy, no 32-entry mapping list.
+      # SERVER_UDP_PORTS must still carry the public IP (EC2 public IP is NAT'd). Unset otherwise
+      # (keeps the default bridge mode for RakNet/Java).
+      NetworkMode: !If [IsNetherNet, "host", !Ref "AWS::NoValue"]
       Volumes:
         - Host:
             SourcePath: /opt/minecraft
@@ -741,7 +791,7 @@ Resources:
           #Image: !FindInMap [MinecraftBaseImage, !Ref BedrockOrJava, Image]
           Image: !If
             - IsBedrock
-            - "itzg/minecraft-bedrock-server"
+            - !Sub "itzg/minecraft-bedrock-server:${BedrockImageTag}"
             - !Sub "itzg/minecraft-server:${MinecraftImageTag}"
           # MinecraftBaseImage:
           #     Bedrock:
@@ -761,6 +811,14 @@ Resources:
             - ContainerPort: !FindInMap [ServerPort, !Ref BedrockOrJava, Port]
               HostPort: !FindInMap [ServerPort, !Ref BedrockOrJava, Port]
               Protocol: !If [IsBedrock, "udp", "tcp"]
+            # In host mode these are documentation (hostPort must equal containerPort). The UDP
+            # gameplay range is not listed: BDS binds it directly and the SG rule opens it.
+            - !If
+              - IsNetherNet
+              - ContainerPort: 19132
+                HostPort: 19132
+                Protocol: tcp
+              - !Ref "AWS::NoValue"
           MountPoints:
             - ContainerPath: /data
               SourceVolume: minecraft
@@ -785,6 +843,19 @@ Resources:
               Value: !Sub "${ServerBrand} §b>>BEDROCK<<§r"
             # - Name: "MAX_TICK_TIME"
             #   Value: "-1" # set to -1 to disable the serverhangwatchdog
+            - !If
+              - IsBedrock
+              - Name: "TRANSPORT"
+                Value: !Ref BedrockTransport
+              - !Ref "AWS::NoValue"
+            - !If
+              - IsNetherNet
+              # <public_ip> is replaced by the itzg entrypoint at container start (curl -s ifconfig.me).
+              # Form is IP:public-range:local-range; ranges must be the same size. IP LITERAL only
+              # (a hostname makes the client join fail with "Door").
+              - Name: "SERVER_UDP_PORTS"
+                Value: !Sub "<public_ip>:${BedrockUdpPortStart}-${BedrockUdpPortEnd}:${BedrockUdpPortStart}-${BedrockUdpPortEnd}"
+              - !Ref "AWS::NoValue"
             - !If
               - MinecraftTypeTagProvided
               - Name: "TYPE"
