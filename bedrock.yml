@@ -78,8 +78,8 @@ Parameters:
 
   BedrockImageTag:
     Type: String
-    Description: "itzg/minecraft-bedrock-server tag. Only applies to Bedrock servers. Pin a release (e.g. 2026.10.2): changing it forces a new task-def revision and a fresh image pull. 'latest' is only re-pulled on a fresh instance."
-    Default: "2026.10.2"
+    Description: "itzg/minecraft-bedrock-server tag. Only applies to Bedrock servers. Default latest; pin a release (e.g. 2026.10.2) to hold the image back. Requires itzg >= 2026.10.0 for NetherNet (TRANSPORT, SERVER_UDP_PORTS, <public_ip>)."
+    Default: "latest"
 
   BedrockTransport:
     Type: String
