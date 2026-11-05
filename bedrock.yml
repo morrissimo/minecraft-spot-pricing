@@ -101,7 +101,7 @@ Parameters:
 
   SignalingTls:
     Type: String
-    Description: "NetherNet only. true = run a TLS-terminating proxy (Traefik) on TCP 19132 with a Let's Encrypt cert for RecordName (ACME DNS-01 on HostedZoneId) and move BDS signaling to BedrockSignalingBackendPort. Plain HTTP on 19132 keeps working as a fallback (players who connect that way still get the trust-on-first-use prompt). Requires HostedZoneId and RecordName. false = today's behavior."
+    Description: "NetherNet only. true = run a TLS-terminating proxy (Traefik) on TCP 19132 with a Let's Encrypt cert for RecordName (ACME DNS-01 on HostedZoneId) and move BDS signaling to BedrockSignalingBackendPort. Plain HTTP on 19132 is passed through to BDS as a fallback; if the cert is unavailable, clients are EXPECTED to fall back to it (trust-on-first-use prompt) but that client behavior is unverified - test with a bogus ACME CA before enabling on a live server. Requires HostedZoneId, RecordName and SignalingTlsEmail. false = today's behavior."
     Default: "false"
     AllowedValues:
       - "true"
@@ -109,7 +109,7 @@ Parameters:
 
   SignalingTlsEmail:
     Type: String
-    Description: "(Optional) ACME account email for Let's Encrypt expiry notices. Only used when SignalingTls=true."
+    Description: "ACME account email for Let's Encrypt (expiry notices). REQUIRED when SignalingTls=true: with an empty email Traefik registers a new ACME account on every CA contact."
     Default: ""
 
   SignalingTlsAcmeCa:
@@ -374,7 +374,6 @@ Conditions:
   SignalingTlsEnabled: !And
     - !Condition IsNetherNet
     - !Equals [!Ref SignalingTls, "true"]
-  SignalingTlsEmailProvided: !Not [!Equals [!Ref SignalingTlsEmail, ""]]
   CurseForgeModpackS3UrlProvided:
     !And [
       !Equals [!Ref MinecraftTypeTag, "CURSEFORGE"],
@@ -421,15 +420,23 @@ Mappings:
     staging:
       Url: "https://acme-staging-v02.api.letsencrypt.org/directory"
 
-# Fail at validation, not at runtime: the proxy's DNS-01 challenge needs the zone and the record name.
+# Fail at validation, not at runtime.
 Rules:
-  SignalingTlsNeedsDns:
+  SignalingTlsPrerequisites:
     RuleCondition: !Equals [!Ref SignalingTls, "true"]
     Assertions:
       - Assert: !And
           - !Not [!Equals [!Ref HostedZoneId, ""]]
           - !Not [!Equals [!Ref RecordName, ""]]
-        AssertDescription: "SignalingTls=true requires HostedZoneId and RecordName."
+        AssertDescription: "SignalingTls=true requires HostedZoneId and RecordName (the proxy's DNS-01 challenge)."
+      - Assert: !Not [!Equals [!Ref SignalingTlsEmail, ""]]
+        AssertDescription: "SignalingTls=true requires SignalingTlsEmail (Traefik re-registers a new ACME account on every CA contact when it is empty)."
+      - Assert: !And
+          - !Equals [!Ref BedrockOrJava, "Bedrock"]
+          - !Equals [!Ref BedrockTransport, "nethernet"]
+        AssertDescription: "SignalingTls=true only applies to Bedrock with BedrockTransport=nethernet."
+      - Assert: !Not [!Equals [!Ref BedrockSignalingBackendPort, "19132"]]
+        AssertDescription: "BedrockSignalingBackendPort must differ from 19132 (the proxy listens there)."
 
 Resources:
   # ====================================================
@@ -1022,8 +1029,11 @@ Resources:
 
         # --- NetherNet TLS signaling (SignalingTls=true) ---------------------------------------
         # Traefik listens on 19132 and serves BOTH TLS (terminated, proxied to BDS) and plain HTTP
-        # (raw passthrough to BDS). A cert failure therefore degrades to the plain-HTTP trust
-        # prompt instead of an outage. Mojang: HTTPS signaling with a valid cert = no trust prompt.
+        # (raw passthrough to BDS). Mojang: HTTPS signaling with a valid cert = no trust prompt.
+        # A cert failure is EXPECTED to degrade to the plain-HTTP trust prompt, but that is
+        # UNVERIFIED: without a cert Traefik completes TLS with its self-signed default cert (it does
+        # not fail the handshake like BDS does), and whether the Minecraft client then falls back to
+        # plain HTTP is untested (design doc section 7 #2). Test before enabling on a live server.
         # One-shot init: writes Traefik's dynamic config and fixes acme.json permissions (the
         # LaunchTemplate UserData runs `chmod +r -R /opt/minecraft` on every boot, which would
         # leave the ACME store world-readable and make Traefik refuse it).
@@ -1041,6 +1051,7 @@ Resources:
                 printf '%s\n' "$DYNAMIC_CONFIG" > /tls/dynamic.yml
                 touch /tls/acme.json
                 chmod 600 /tls/acme.json
+                chmod 700 /tls
             Environment:
               - Name: DYNAMIC_CONFIG
                 Value: !Sub |
@@ -1103,10 +1114,7 @@ Resources:
               - !Sub
                 - "--certificatesresolvers.le.acme.caserver=${Url}"
                 - Url: !FindInMap [AcmeCa, !Ref SignalingTlsAcmeCa, Url]
-              - !If
-                - SignalingTlsEmailProvided
-                - !Sub "--certificatesresolvers.le.acme.email=${SignalingTlsEmail}"
-                - !Ref "AWS::NoValue"
+              - !Sub "--certificatesresolvers.le.acme.email=${SignalingTlsEmail}"
               - --accesslog=true
               - --log.level=INFO
             Environment:
