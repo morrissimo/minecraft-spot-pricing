@@ -101,7 +101,7 @@ Parameters:
 
   SignalingTls:
     Type: String
-    Description: "NetherNet only. true = run a TLS-terminating proxy (Traefik) on TCP 19132 with a Let's Encrypt cert for RecordName (ACME DNS-01 on HostedZoneId) and move BDS signaling to BedrockSignalingBackendPort. Plain HTTP on 19132 is passed through to BDS as a fallback; if the cert is unavailable, clients are EXPECTED to fall back to it (trust-on-first-use prompt) but that client behavior is unverified - test with a bogus ACME CA before enabling on a live server. Requires HostedZoneId, RecordName and SignalingTlsEmail. false = today's behavior."
+    Description: "NetherNet only. true = run a TLS-terminating proxy (Traefik) on TCP 19132 with a Let's Encrypt cert for RecordName (ACME DNS-01 on HostedZoneId) and move BDS signaling to BedrockSignalingBackendPort. Plain HTTP on 19132 is passed through to BDS as a fallback; if the cert is unavailable the proxy rejects TLS handshakes (sniStrict) and clients fall back to plain HTTP. Verified on one Android client only; iOS and consoles untested. Requires HostedZoneId, RecordName and SignalingTlsEmail. false = today's behavior."
     Default: "false"
     AllowedValues:
       - "true"
@@ -1026,10 +1026,12 @@ Resources:
         # --- NetherNet TLS signaling (SignalingTls=true) ---------------------------------------
         # Traefik listens on 19132 and serves BOTH TLS (terminated, proxied to BDS) and plain HTTP
         # (raw passthrough to BDS). Mojang: HTTPS signaling with a valid cert = no trust prompt.
-        # A cert failure is EXPECTED to degrade to the plain-HTTP trust prompt, but that is
-        # UNVERIFIED: without a cert Traefik completes TLS with its self-signed default cert (it does
-        # not fail the handshake like BDS does), and whether the Minecraft client then falls back to
-        # plain HTTP is untested (design doc section 7 #2). Test before enabling on a live server.
+        # tls.options.default.sniStrict is REQUIRED for the fallback: with no cert Traefik otherwise
+        # completes TLS with its self-signed default cert, and a real Android client (Pixel 7,
+        # 1.26.60) then refuses to join at all (InitialConnection-149) instead of falling back to
+        # plain HTTP. With sniStrict, Traefik rejects the handshake with an alert (as BDS does with
+        # no TLS) and the same client falls back to plain HTTP and joins. Verified on one Android
+        # device only; iOS, consoles and other clients are untested.
         # One-shot init: writes Traefik's dynamic config and fixes acme.json permissions (the
         # LaunchTemplate UserData runs `chmod +r -R /opt/minecraft` on every boot, which would
         # leave the ACME store world-readable and make Traefik refuse it).
@@ -1077,6 +1079,10 @@ Resources:
                         loadBalancer:
                           servers:
                             - url: "http://127.0.0.1:${BedrockSignalingBackendPort}"
+                  tls:
+                    options:
+                      default:
+                        sniStrict: true
             MountPoints:
               - ContainerPath: /tls
                 SourceVolume: tls
