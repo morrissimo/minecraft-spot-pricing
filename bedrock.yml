@@ -99,6 +99,39 @@ Parameters:
     Description: "Last UDP port of the NetherNet gameplay range (inclusive)."
     Default: 19171
 
+  SignalingTls:
+    Type: String
+    Description: "NetherNet only. true = run a TLS-terminating proxy (Traefik) on TCP 19132 with a Let's Encrypt cert for RecordName (ACME DNS-01 on HostedZoneId) and move BDS signaling to BedrockSignalingBackendPort. Plain HTTP on 19132 keeps working as a fallback (players who connect that way still get the trust-on-first-use prompt). Requires HostedZoneId and RecordName. false = today's behavior."
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+
+  SignalingTlsEmail:
+    Type: String
+    Description: "(Optional) ACME account email for Let's Encrypt expiry notices. Only used when SignalingTls=true."
+    Default: ""
+
+  SignalingTlsAcmeCa:
+    Type: String
+    Description: "ACME CA for SignalingTls. staging issues untrusted test certs with high rate limits (use for test stacks); production = Let's Encrypt."
+    Default: production
+    AllowedValues:
+      - production
+      - staging
+
+  BedrockSignalingBackendPort:
+    Type: Number
+    Description: "TCP port BDS signaling listens on behind the proxy (SERVER_PORT) when SignalingTls=true. Loopback only; not opened in the security group. Must differ from 19132."
+    Default: 19133
+    MinValue: 1024
+    MaxValue: 65535
+
+  SignalingProxyImageTag:
+    Type: String
+    Description: "traefik image tag for the signaling proxy. Pin a minor (e.g. v3.7) so patch releases are picked up on relaunch but majors are not."
+    Default: "v3.7"
+
   MinecraftTypeTag:
     Type: String
     Description: "(Examples include CURSEFORGE, SPIGOT, BUKKIT, TUINITY, etc) Refer to tag descriptions available here: https://github.com/itzg/docker-minecraft-server)"
@@ -267,6 +300,11 @@ Metadata:
           - BedrockTransport
           - BedrockUdpPortStart
           - BedrockUdpPortEnd
+          - SignalingTls
+          - SignalingTlsEmail
+          - SignalingTlsAcmeCa
+          - BedrockSignalingBackendPort
+          - SignalingProxyImageTag
       - Label:
           default: Optional Remote Access (SSH) Configuration
         Parameters:
@@ -332,6 +370,11 @@ Conditions:
   IsNetherNet: !And
     - !Equals [!Ref BedrockOrJava, "Bedrock"]
     - !Equals [!Ref BedrockTransport, "nethernet"]
+  # TLS signaling proxy; only meaningful under NetherNet (under RakNet there is no TCP signaling).
+  SignalingTlsEnabled: !And
+    - !Condition IsNetherNet
+    - !Equals [!Ref SignalingTls, "true"]
+  SignalingTlsEmailProvided: !Not [!Equals [!Ref SignalingTlsEmail, ""]]
   CurseForgeModpackS3UrlProvided:
     !And [
       !Equals [!Ref MinecraftTypeTag, "CURSEFORGE"],
@@ -372,6 +415,21 @@ Mappings:
       Port: 19132
     Java:
       Port: 25565
+  AcmeCa:
+    production:
+      Url: "https://acme-v02.api.letsencrypt.org/directory"
+    staging:
+      Url: "https://acme-staging-v02.api.letsencrypt.org/directory"
+
+# Fail at validation, not at runtime: the proxy's DNS-01 challenge needs the zone and the record name.
+Rules:
+  SignalingTlsNeedsDns:
+    RuleCondition: !Equals [!Ref SignalingTls, "true"]
+    Assertions:
+      - Assert: !And
+          - !Not [!Equals [!Ref HostedZoneId, ""]]
+          - !Not [!Equals [!Ref RecordName, ""]]
+        AssertDescription: "SignalingTls=true requires HostedZoneId and RecordName."
 
 Resources:
   # ====================================================
@@ -781,6 +839,15 @@ Resources:
         - Host:
             SourcePath: /tmp/modpacks
           Name: modpacks
+        # ACME state + proxy config. /opt/minecraft is the EFS mount, so the cert survives spot
+        # relaunches (a relaunch reuses it instead of re-ordering; Let's Encrypt allows only 5 new
+        # certs per hostname per 7 days).
+        - !If
+          - SignalingTlsEnabled
+          - Host:
+              SourcePath: /opt/minecraft/tls
+            Name: tls
+          - !Ref "AWS::NoValue"
       ContainerDefinitions:
         - Name: minecraft
           MemoryReservation: 1024
@@ -815,8 +882,8 @@ Resources:
             # gameplay range is not listed: BDS binds it directly and the SG rule opens it.
             - !If
               - IsNetherNet
-              - ContainerPort: 19132
-                HostPort: 19132
+              - ContainerPort: !If [SignalingTlsEnabled, !Ref BedrockSignalingBackendPort, 19132]
+                HostPort: !If [SignalingTlsEnabled, !Ref BedrockSignalingBackendPort, 19132]
                 Protocol: tcp
               - !Ref "AWS::NoValue"
           MountPoints:
@@ -855,6 +922,13 @@ Resources:
               # (a hostname makes the client join fail with "Door").
               - Name: "SERVER_UDP_PORTS"
                 Value: !Sub "<public_ip>:${BedrockUdpPortStart}-${BedrockUdpPortEnd}:${BedrockUdpPortStart}-${BedrockUdpPortEnd}"
+              - !Ref "AWS::NoValue"
+            - !If
+              - SignalingTlsEnabled
+              # BDS signaling moves behind the TLS proxy, which owns 19132. Only under nethernet:
+              # under RakNet server-port is the UDP game port.
+              - Name: "SERVER_PORT"
+                Value: !Ref BedrockSignalingBackendPort
               - !Ref "AWS::NoValue"
             - !If
               - MinecraftTypeTagProvided
@@ -945,6 +1019,114 @@ Resources:
             - Name: RCON_CMDS_LAST_DISCONNECT
               Value: |
                 gamerule doFireTick false
+
+        # --- NetherNet TLS signaling (SignalingTls=true) ---------------------------------------
+        # Traefik listens on 19132 and serves BOTH TLS (terminated, proxied to BDS) and plain HTTP
+        # (raw passthrough to BDS). A cert failure therefore degrades to the plain-HTTP trust
+        # prompt instead of an outage. Mojang: HTTPS signaling with a valid cert = no trust prompt.
+        # One-shot init: writes Traefik's dynamic config and fixes acme.json permissions (the
+        # LaunchTemplate UserData runs `chmod +r -R /opt/minecraft` on every boot, which would
+        # leave the ACME store world-readable and make Traefik refuse it).
+        - !If
+          - SignalingTlsEnabled
+          - Name: signaling-proxy-init
+            Image: busybox:stable
+            Essential: false
+            MemoryReservation: 16
+            Command:
+              - sh
+              - -c
+              - |
+                set -e
+                printf '%s\n' "$DYNAMIC_CONFIG" > /tls/dynamic.yml
+                touch /tls/acme.json
+                chmod 600 /tls/acme.json
+            Environment:
+              - Name: DYNAMIC_CONFIG
+                Value: !Sub |
+                  tcp:
+                    routers:
+                      nn-plain:
+                        entryPoints: [nethernet]
+                        rule: "HostSNI(`*`)"
+                        service: bds-tcp
+                    services:
+                      bds-tcp:
+                        loadBalancer:
+                          servers:
+                            - address: "127.0.0.1:${BedrockSignalingBackendPort}"
+                  http:
+                    routers:
+                      nn-tls:
+                        entryPoints: [nethernet]
+                        rule: "PathPrefix(`/`)"
+                        service: bds-http
+                        tls:
+                          certResolver: le
+                          domains:
+                            - main: "${RecordName}"
+                    services:
+                      bds-http:
+                        loadBalancer:
+                          servers:
+                            - url: "http://127.0.0.1:${BedrockSignalingBackendPort}"
+            MountPoints:
+              - ContainerPath: /tls
+                SourceVolume: tls
+            LogConfiguration:
+              LogDriver: awslogs
+              Options:
+                awslogs-group: !Ref EcsTaskLogGroup
+                awslogs-region: !Ref AWS::Region
+                awslogs-stream-prefix: proxy-init
+          - !Ref "AWS::NoValue"
+        - !If
+          - SignalingTlsEnabled
+          - Name: signaling-proxy
+            Image: !Sub "traefik:${SignalingProxyImageTag}"
+            # Essential: a dead proxy would leave BDS looking healthy while nobody can join.
+            Essential: true
+            MemoryReservation: 128
+            DependsOn:
+              - ContainerName: signaling-proxy-init
+                Condition: SUCCESS
+            PortMappings:
+              # Host mode: documentation only (hostPort must equal containerPort).
+              - ContainerPort: 19132
+                HostPort: 19132
+                Protocol: tcp
+            Command:
+              - --entrypoints.nethernet.address=:19132
+              - --providers.file.filename=/tls/dynamic.yml
+              - --certificatesresolvers.le.acme.dnschallenge.provider=route53
+              - --certificatesresolvers.le.acme.storage=/tls/acme.json
+              - !Sub
+                - "--certificatesresolvers.le.acme.caserver=${Url}"
+                - Url: !FindInMap [AcmeCa, !Ref SignalingTlsAcmeCa, Url]
+              - !If
+                - SignalingTlsEmailProvided
+                - !Sub "--certificatesresolvers.le.acme.email=${SignalingTlsEmail}"
+                - !Ref "AWS::NoValue"
+              - --accesslog=true
+              - --log.level=INFO
+            Environment:
+              # Credentials come from the EC2 instance role (lego's default chain).
+              - Name: AWS_REGION
+                Value: !Ref AWS::Region
+              - Name: AWS_HOSTED_ZONE_ID
+                Value: !Ref HostedZoneId
+            MountPoints:
+              - ContainerPath: /tls
+                SourceVolume: tls
+            LogConfiguration:
+              LogDriver: awslogs
+              Options:
+                mode: non-blocking
+                max-buffer-size: 25m
+                awslogs-group: !Ref EcsTaskLogGroup
+                awslogs-region: !Ref AWS::Region
+                awslogs-stream-prefix: proxy
+          - !Ref "AWS::NoValue"
 
   # ====================================================
   # SET DNS RECORD
