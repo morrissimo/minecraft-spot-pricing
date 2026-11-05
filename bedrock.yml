@@ -819,6 +819,13 @@ Resources:
       DeploymentConfiguration:
         MaximumPercent: 100
         MinimumHealthyPercent: 0
+        # Without this, a task that can never start (bad image tag, an Essential container that
+        # keeps exiting) is retried forever and the CloudFormation update hangs. With it, ECS
+        # stops after repeated failures (the threshold is derived from DesiredCount; AWS documents
+        # a minimum of 3 failed tasks) and rolls the service back to the last good deployment.
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
 
   EcsTaskLogGroup:
     Type: AWS::Logs::LogGroup
