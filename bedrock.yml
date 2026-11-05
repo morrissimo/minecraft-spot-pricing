@@ -122,7 +122,7 @@ Parameters:
 
   BedrockSignalingBackendPort:
     Type: Number
-    Description: "TCP port BDS signaling listens on behind the proxy (SERVER_PORT) when SignalingTls=true. Loopback only; not opened in the security group. Must differ from 19132."
+    Description: "TCP port BDS signaling listens on behind the proxy (SERVER_PORT) when SignalingTls=true. Not opened in the security group (BDS binds all interfaces; the security group is what keeps this port private). Must differ from 19132."
     Default: 19133
     MinValue: 1024
     MaxValue: 65535
@@ -431,10 +431,6 @@ Rules:
         AssertDescription: "SignalingTls=true requires HostedZoneId and RecordName (the proxy's DNS-01 challenge)."
       - Assert: !Not [!Equals [!Ref SignalingTlsEmail, ""]]
         AssertDescription: "SignalingTls=true requires SignalingTlsEmail (Traefik re-registers a new ACME account on every CA contact when it is empty)."
-      - Assert: !And
-          - !Equals [!Ref BedrockOrJava, "Bedrock"]
-          - !Equals [!Ref BedrockTransport, "nethernet"]
-        AssertDescription: "SignalingTls=true only applies to Bedrock with BedrockTransport=nethernet."
       - Assert: !Not [!Equals [!Ref BedrockSignalingBackendPort, "19132"]]
         AssertDescription: "BedrockSignalingBackendPort must differ from 19132 (the proxy listens there)."
 
